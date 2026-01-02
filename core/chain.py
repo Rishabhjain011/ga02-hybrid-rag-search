@@ -1,52 +1,61 @@
 from langchain_groq import ChatGroq
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
 from config.settings import settings
 from tools.tavily_search import TavilySearchTool
 
-PROMPT = ChatPromptTemplate.from_template("""
-You are an AI assistant.
-
-Answer the question using the context below.
-If the answer is not present, say you don't know.
-
-Context:
-{context}
-
-Question:
-{question}
-""")
-
 class RAGChain:
     def __init__(self, vector_store):
-        self.vector_store = vector_store
-        self.web_search = TavilySearchTool()
+        self.vs = vector_store
+        self.web = TavilySearchTool()
         self.llm = ChatGroq(
-            model=settings.LLM_MODEL,
-            temperature=settings.LLM_TEMPERATURE,
             api_key=settings.GROQ_API_KEY,
+            model=settings.LLM_MODEL,
+            temperature=settings.LLM_TEMPERATURE
         )
 
-    def run(self, query: str, use_web: bool = False):
-        # 1️⃣ Document context
-        docs = self.vector_store.search(query)
-        doc_context = "\n\n".join(
-            f"[Doc] {d.page_content}" for d in docs
-        )
+    def classify_query(self, query: str):
+        q = query.lower()
+        if any(k in q for k in ["latest", "current", "today", "news"]):
+            return "web"
+        if "document" in q or "pdf" in q:
+            return "doc"
+        return "hybrid"
 
-        # 2️⃣ Web context (optional)
-        web_context = ""
-        if use_web:
-            web_context = self.web_search.search(query)
+    def run(self, query: str):
+        mode = self.classify_query(query)
 
-        # 3️⃣ Hybrid context
-        full_context = doc_context
-        if web_context:
-            full_context += "\n\n" + web_context
+        docs = self.vs.search(query)
+        doc_context, doc_sources = "", []
 
-        # 4️⃣ LLM
-        chain = PROMPT | self.llm | StrOutputParser()
-        return chain.invoke({
-            "context": full_context,
-            "question": query
-        })
+        for i, d in enumerate(docs):
+            ref = f"{d.metadata.get('source')} – Chunk {i}"
+            doc_context += f"[DOC] {ref}\n{d.page_content}\n\n"
+            doc_sources.append(ref)
+
+        web_context, web_sources = "", []
+        if mode in ["web", "hybrid"]:
+            web_results = self.web.search(query)
+            for w in web_results:
+                web_context += f"[WEB] {w.title}\n{w.content}\n\n"
+                web_sources.append(w.url)
+
+        prompt = f"""
+Use ONLY the information below to answer.
+
+Document Context:
+{doc_context}
+
+Web Context:
+{web_context}
+
+Question:
+{query}
+"""
+
+        answer = self.llm.invoke(prompt).content
+
+        return {
+            "answer": answer,
+            "mode": mode,
+            "doc_sources": doc_sources,
+            "web_sources": web_sources
+        }

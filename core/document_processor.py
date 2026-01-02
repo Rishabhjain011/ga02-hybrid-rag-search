@@ -1,25 +1,23 @@
 from pathlib import Path
-from typing import List
-from langchain_core.documents import Document
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from core.text_cleaner import TextCleaner
 from config.settings import settings
-
 
 class DocumentProcessor:
     def __init__(self):
         self.splitter = RecursiveCharacterTextSplitter(
             chunk_size=settings.CHUNK_SIZE,
-            chunk_overlap=settings.CHUNK_OVERLAP,
+            chunk_overlap=settings.CHUNK_OVERLAP
         )
 
-    def load(self, path: str) -> List[Document]:
+    def process(self, path: str):
         ext = Path(path).suffix.lower()
-        if ext == ".pdf":
-            return PyPDFLoader(path).load()
-        if ext == ".txt":
-            return TextLoader(path, encoding="utf-8").load()
-        raise ValueError("Unsupported file type")
+        loader = PyPDFLoader(path) if ext == ".pdf" else TextLoader(path)
+        docs = loader.load()
 
-    def process(self, path: str) -> List[Document]:
-        return self.splitter.split_documents(self.load(path))
+        for d in docs:
+            d.page_content = TextCleaner.clean(d.page_content)
+            d.metadata["source"] = Path(path).name
+
+        return self.splitter.split_documents(docs)
